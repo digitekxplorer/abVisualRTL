@@ -1,10 +1,19 @@
-import math
 from nugui.generators.base import CodeGenerator
-from nugui.models.elements import StateNode, TransitionLine
 
 
 class VHDLGenerator(CodeGenerator):
+
+    # FIX 2.1: format a port's default_value as a VHDL literal.
+    def _vhdl_default(self, port) -> str:
+        val = (port.default_value or "0").strip()
+        if val in ("0", "1"):
+            if port.width > 1:
+                return f"(others => '{val}')"
+            return f"'{val}'"
+        return val  # user supplied a full literal/expression; emit verbatim
+
     def generate(self) -> str:
+        self.check_names()  # FIX 2.3/2.4
         code = []
         name = self.settings.project_name
 
@@ -56,7 +65,7 @@ class VHDLGenerator(CodeGenerator):
         # 4. Sequential Process (Register)
         # Determine Reset Logic
         rst_level = "'0'" if self.settings.reset_active_low else "'1'"
-        reset_node = next((n for n in self.nodes.values() if n.is_reset_state), list(self.nodes.values())[0])
+        reset_node = self.find_reset_node()  # FIX 3.2
 
         code.append(f"{self.indent(1)}-- Sequential State Register")
         code.append(f"{self.indent(1)}process({self.settings.clock_name}, {self.settings.reset_name})")
@@ -83,11 +92,23 @@ class VHDLGenerator(CodeGenerator):
         code.append("")
 
         # 5. Combinational Process (Next State Logic)
+        # FIX 1.2: build the sensitivity list first, then join once —
+        # no trailing comma when there are no input ports.
+        sens_list = ["state_reg"] + [p.name for p in self.input_ports()]
         code.append(f"{self.indent(1)}-- Next State Logic")
-        code.append(
-            f"{self.indent(1)}process(state_reg, {', '.join([p.name for p in self.settings.ports if p.direction.value == 'input'])})")
+        code.append(f"{self.indent(1)}process({', '.join(sens_list)})")
         code.append(f"{self.indent(1)}begin")
         code.append(f"{self.indent(2)}state_next <= state_reg;")  # Prevent latch
+
+        # FIX 2.1: assign every output its default value at the top of the
+        # combinational process so an output driven in only some states or
+        # branches cannot infer a latch.
+        output_ports = self.output_ports()  # FIX 3.2
+        if output_ports:
+            code.append(f"{self.indent(2)}-- Default outputs (latch prevention)")
+            for port in output_ports:
+                code.append(f"{self.indent(2)}{port.name} <= {self._vhdl_default(port)};")
+
         code.append("")
         code.append(f"{self.indent(2)}case state_reg is")
 
@@ -97,54 +118,47 @@ class VHDLGenerator(CodeGenerator):
             # Moore Actions
             if node.actions:
                 for action in node.actions:
-                    act = action.strip()
-                    if act and not act.endswith(';'): act += ";"
+                    act = self.clean_action(action)  # FIX 3.2
                     code.append(f"{self.indent(4)}{act}")
 
-            # Transitions
-            outgoing = [line for line in self.lines if line.start_state_id == node.id]
-            outgoing.sort(key=lambda x: x.priority)
+            # Transitions, highest priority first (FIX 3.2)
+            outgoing = self.outgoing_sorted(node)
 
-            if outgoing:
-                first = True
-                for line in outgoing:
-                    prefix = "if" if first else "elsif"
-                    target_name = self.nodes[line.end_state_id].name
+            # FIX 1.3: track whether an 'if' has been opened with one boolean
+            # instead of re-deriving it from condition strings. This prevents
+            # a dangling 'else' when the first transition is unconditional,
+            # and guarantees 'end if;' is emitted iff an 'if' was opened.
+            opened_if = False
+            for line in outgoing:
+                target_name = self.nodes[line.end_state_id].name
 
-                    cond = line.condition.strip()
-                    if not cond: cond = "1"  # VHDL usually uses '1' for true in std_logic, or 'true' boolean
+                cond = self.clean_condition(line.condition)  # FIX 3.2
+                # 'if 1 then' is invalid VHDL; normalize to boolean literal
+                if cond == "1": cond = "true"
 
-                    # Convert "1" to "true" for VHDL if statements usually require boolean context
-                    # or simplistic checking. Assuming user types HDL condition.
-                    # Special check: if user typed "1", in VHDL 'if 1 then' is invalid.
-                    if cond == "1": cond = "true"
+                line_act = self.clean_action(line.action)  # FIX 3.2
 
-                    line_act = line.action.strip()
-                    if line_act and not line_act.endswith(';'): line_act += ";"
-
-                    # Scenario 1: Unconditional (Single)
-                    if len(outgoing) == 1 and cond.lower() == "true":
+                if cond.lower() in ("true", "else"):
+                    if opened_if:
+                        # Unconditional fallback branch of an open chain
+                        code.append(f"{self.indent(4)}else")
+                        code.append(f"{self.indent(5)}state_next <= {target_name};")
+                        if line_act: code.append(f"{self.indent(5)}{line_act}")
+                    else:
+                        # Unconditional first branch: emit directly, no if chain
                         code.append(f"{self.indent(4)}state_next <= {target_name};")
                         if line_act: code.append(f"{self.indent(4)}{line_act}")
-                        continue
-
-                    # Scenario 2: If/Elsif
-                    if cond.lower() == "true" or cond.lower() == "else":
-                        code.append(f"{self.indent(4)}else")
-                    else:
-                        code.append(f"{self.indent(4)}{prefix} {cond} then")
-
+                    # Anything after an unconditional branch is unreachable
+                    break
+                else:
+                    prefix = "elsif" if opened_if else "if"
+                    code.append(f"{self.indent(4)}{prefix} {cond} then")
+                    opened_if = True
                     code.append(f"{self.indent(5)}state_next <= {target_name};")
                     if line_act: code.append(f"{self.indent(5)}{line_act}")
 
-                    # Close the if block only after processing all lines?
-                    # No, we need to track logic structure.
-                    # Unlike SV, VHDL is verbose. We need 'end if;' at the very end of the chain.
-                    first = False
-
-                # Close the chain
-                if not (len(outgoing) == 1 and outgoing[0].condition.strip() in ["1", ""]):
-                    code.append(f"{self.indent(4)}end if;")
+            if opened_if:
+                code.append(f"{self.indent(4)}end if;")
 
             code.append("")  # Spacer
 
