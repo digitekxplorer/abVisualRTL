@@ -1,10 +1,28 @@
-import math
+import re
 from nugui.generators.base import CodeGenerator
-from nugui.models.elements import StateNode, TransitionLine
 
 
 class SystemVerilogGenerator(CodeGenerator):
+
+    # FIX 2.1: format a port's default_value as an SV literal.
+    def _sv_default(self, port) -> str:
+        val = (port.default_value or "0").strip()
+        if val.isdigit():
+            return f"{port.width}'d{val}" if port.width > 1 else f"1'b{val}"
+        return val  # user supplied a full literal/expression; emit verbatim
+
+    # FIX 2.2: inside always_comb, assignments must be blocking (=).
+    # Users often type non-blocking (led <= '1'), which simulates wrong.
+    # Only the assignment operator is rewritten: the pattern requires the
+    # line to START with a plain signal target, so a comparison like
+    # 'if (a <= b)' is never touched.
+    _ASSIGN_RE = re.compile(r"^(\s*[A-Za-z_]\w*\s*(?:\[[^\]]*\]\s*)?)<=")
+
+    def _normalize_action(self, act: str) -> str:
+        return self._ASSIGN_RE.sub(r"\1= ", act).replace("=  ", "= ")
+
     def generate(self) -> str:
+        self.check_names()  # FIX 2.3/2.4
         code = []
 
         # 1. Header & Module
@@ -34,7 +52,9 @@ class SystemVerilogGenerator(CodeGenerator):
         state_names = [node.name for node in self.nodes.values()]
         # Calculate bit width needed
         num_states = len(state_names)
-        width = math.ceil(math.log2(num_states)) if num_states > 1 else 1
+        # FIX 2.5: exact integer computation - float log2 can land just
+        # under an integer at exact powers of two on some platforms.
+        width = max(1, (num_states - 1).bit_length())
 
         code.append(f"{self.indent(1)}// State Encoding")
         code.append(f"{self.indent(1)}typedef enum logic [{width - 1}:0] {{")
@@ -57,7 +77,7 @@ class SystemVerilogGenerator(CodeGenerator):
             sensitivity += f" or {rst_edge} {self.settings.reset_name}"
 
         # Find Reset State (First created or explicitly marked)
-        reset_node = next((n for n in self.nodes.values() if n.is_reset_state), list(self.nodes.values())[0])
+        reset_node = self.find_reset_node()  # FIX 3.2
 
         code.append(f"{self.indent(1)}// Sequential State Register")
         code.append(f"{self.indent(1)}always_ff @({sensitivity}) begin")
@@ -72,6 +92,16 @@ class SystemVerilogGenerator(CodeGenerator):
         code.append(f"{self.indent(1)}// Next State Logic")
         code.append(f"{self.indent(1)}always_comb begin")
         code.append(f"{self.indent(2)}state_next = state_reg;")
+
+        # FIX 2.1: assign every output its default value at the top of the
+        # combinational block so an output driven in only some states or
+        # branches cannot infer a latch.
+        output_ports = self.output_ports()  # FIX 3.2
+        if output_ports:
+            code.append(f"{self.indent(2)}// Default outputs (latch prevention)")
+            for port in output_ports:
+                code.append(f"{self.indent(2)}{port.name} = {self._sv_default(port)};")
+
         code.append("")
         code.append(f"{self.indent(2)}case (state_reg)")
 
@@ -81,28 +111,20 @@ class SystemVerilogGenerator(CodeGenerator):
             # Moore Actions (State actions)
             if node.actions:
                 for action in node.actions:
-                    # Sanitize: ensure semicolon
-                    act = action.strip()
-                    if act and not act.endswith(';'): act += ";"
+                    # FIX 3.2 + 2.2: shared sanitizer, blocking assignment
+                    act = self.clean_action(self._normalize_action(action))
                     code.append(f"{self.indent(4)}{act}")
 
-            # Transitions
-            # Group lines starting from this node
-            outgoing = [line for line in self.lines if line.start_state_id == node.id]
-            # Sort by Priority (1 is highest, so ascending sort)
-            outgoing.sort(key=lambda x: x.priority)
+            # Transitions, highest priority first (FIX 3.2)
+            outgoing = self.outgoing_sorted(node)
 
             if outgoing:
                 for i, line in enumerate(outgoing):
                     target_name = self.nodes[line.end_state_id].name
 
-                    # Sanitize Condition: Handle empty strings
-                    cond = line.condition.strip()
-                    if not cond: cond = "1"
-
-                    # Sanitize Action: Ensure semicolon
-                    line_act = line.action.strip()
-                    if line_act and not line_act.endswith(';'): line_act += ";"
+                    # FIX 3.2: shared sanitizers
+                    cond = self.clean_condition(line.condition)
+                    line_act = self.clean_action(self._normalize_action(line.action))
 
                     # Scenario 1: Single Unconditional Transition (No if/else needed)
                     if len(outgoing) == 1 and cond == "1":
