@@ -1,7 +1,12 @@
 import tkinter as tk
 import math
-from nugui.utils.constants import *
+from nugui.utils.constants import (
+    ToolType, GRID_SIZE, BUBBLE_RADIUS,
+    COLOR_BG, COLOR_GRID, COLOR_STATE_FILL, COLOR_STATE_OUTLINE,
+    COLOR_LINE, COLOR_TEMP_LINE, COLOR_SELECTED
+)
 from nugui.models.elements import StateNode, TransitionLine
+from nugui.models.diagram import Diagram
 from nugui.ui.dialogs.state_editor import StateEditor
 from nugui.ui.dialogs.transition_editor import TransitionEditor
 from nugui.utils.history import CommandManager
@@ -17,10 +22,10 @@ class GraphCanvas(tk.Canvas):
 
         # Application State
         self.current_tool = ToolType.SELECT
-        self.nodes = {}
-        self.lines = []
-        self.node_counter = 0
-        self.line_counter = 0
+        # FIX 3.1: the data model lives in a GUI-free Diagram; the canvas
+        # only renders and edits it. nodes/lines properties below keep the
+        # existing call sites (commands, main.py) working unchanged.
+        self.diagram = Diagram()
         self.selected_line = None
         self.selected_node = None
 
@@ -51,10 +56,20 @@ class GraphCanvas(tk.Canvas):
         self.bind("<B1-Motion>", self.on_mouse_drag)
         self.bind("<ButtonRelease-1>", self.on_mouse_up)
         self.bind("<Double-Button-1>", self.on_double_click)
+        # Redraw the viewport-local dot grid when the widget resizes
+        self.bind("<Configure>", lambda e: self._draw_grid())
 
     # ==========================================
     # Public API
     # ==========================================
+
+    @property
+    def nodes(self):
+        return self.diagram.nodes
+
+    @property
+    def lines(self):
+        return self.diagram.lines
 
     def set_tool(self, tool: ToolType):
         self.current_tool = tool
@@ -114,12 +129,18 @@ class GraphCanvas(tk.Canvas):
     def _notify_change(self):
         self.event_generate("<<DiagramChanged>>")
 
+    # FIX 1.4: only notify (and dirty the project) when the stack
+    # actually had something to undo/redo.
     def undo(self):
+        if not self.history.undo_stack:
+            return
         self.history.undo()
         self._notify_change()
         self.update_scrollregion()
 
     def redo(self):
+        if not self.history.redo_stack:
+            return
         self.history.redo()
         self._notify_change()
         self.update_scrollregion()
@@ -135,10 +156,9 @@ class GraphCanvas(tk.Canvas):
         if self.selected_node:
             node_id = self.selected_node.id
             nodes_to_del.append(self.selected_node)
-            for line in self.lines:
-                if line.start_state_id == node_id or line.end_state_id == node_id:
-                    if line not in lines_to_del:
-                        lines_to_del.append(line)
+            for line in self.diagram.lines_touching(node_id):
+                if line not in lines_to_del:
+                    lines_to_del.append(line)
             self._select_node(None)
 
         if nodes_to_del or lines_to_del:
@@ -167,6 +187,7 @@ class GraphCanvas(tk.Canvas):
         if self.grid_style == "Hidden": return
 
         step = self._to_screen(GRID_SIZE)
+        if step < 1: return  # Avoid infinite loops at extreme zoom-out
 
         # Determine grid size based on current scrollregion or default
         # We need a large enough grid to cover potential expansion
@@ -184,15 +205,37 @@ class GraphCanvas(tk.Canvas):
                 y += step
 
         elif self.grid_style == "Dots":
-            x = 0
-            while x < w:
-                y = 0
-                while y < h:
+            # FIX 4.1 (rev 2): Windows ignores fine dash patterns, so draw
+            # real dot items — but only inside the visible viewport
+            # (a few thousand items max instead of ~62,500 for the whole
+            # logical area). xview/yview overrides below redraw on scroll.
+            vx0 = self.canvasx(0)
+            vy0 = self.canvasy(0)
+            vx1 = self.canvasx(self.winfo_width())
+            vy1 = self.canvasy(self.winfo_height())
+            x = max(0, math.floor(vx0 / step) * step)
+            y_start = max(0, math.floor(vy0 / step) * step)
+            x_end = min(w, vx1 + step)
+            y_end = min(h, vy1 + step)
+            while x < x_end:
+                y = y_start
+                while y < y_end:
                     self.create_line(x, y, x + 1, y, fill="#b0b0b0", tags="grid")
                     y += step
                 x += step
 
         self.tag_lower("grid")
+
+    # Scrollbars call xview/yview; redraw the viewport-local grid on scroll.
+    def xview(self, *args):
+        result = super().xview(*args)
+        if args: self._draw_grid()
+        return result
+
+    def yview(self, *args):
+        result = super().yview(*args)
+        if args: self._draw_grid()
+        return result
 
     def _snap(self, val):
         if not self.snap_to_grid: return val
@@ -205,46 +248,38 @@ class GraphCanvas(tk.Canvas):
     def clear_canvas(self):
         self.delete("all")
         self._draw_grid()
-        self.nodes = {}
-        self.lines = []
-        self.node_counter = 0
-        self.line_counter = 0
+        self.diagram.clear()
         self.selected_line = None
         self.selected_node = None
         self.history = CommandManager()
 
     def save_data_snapshot(self):
         # Data is already stored in Logic Coordinates in self.nodes/self.lines
+        # NOTE (3.4): returns live references, not copies.
         return self.nodes, self.lines
 
     def load_from_data(self, nodes: dict, lines: list):
         self.clear_canvas()
         self.zoom_scale = 1.0  # Reset zoom
 
-        max_node_id = -1
-        for node in nodes.values():
+        # FIX 3.1: the Diagram owns the data and re-syncs the ID counters
+        self.diagram.load(nodes, lines)
+        for node in self.nodes.values():
             self._draw_loaded_node(node)
-            self.nodes[node.id] = node
-            if node.id > max_node_id: max_node_id = node.id
-        max_line_id = -1
-        for line in lines:
+        for line in self.lines:
             self._draw_loaded_line(line)
-            self.lines.append(line)
-            if line.id > max_line_id: max_line_id = line.id
-        self.node_counter = max_node_id + 1
-        self.line_counter = max_line_id + 1
         self.toggle_details(self.show_details)
         self.update_scrollregion()
         self._notify_change()
 
     def restore_node(self, node):
-        self.nodes[node.id] = node
+        self.diagram.add_node(node)
         self._draw_loaded_node(node)
         self.toggle_details(self.show_details)
         self.update_scrollregion()
 
     def restore_line(self, line):
-        self.lines.append(line)
+        self.diagram.add_line(line)
         self._draw_loaded_line(line)
         self.toggle_details(self.show_details)
 
@@ -252,13 +287,13 @@ class GraphCanvas(tk.Canvas):
         node = self.nodes.get(node_id)
         if not node: return
         self._remove_node_visuals(node)
-        del self.nodes[node_id]
+        self.diagram.remove_node(node_id)
 
     def _remove_line(self, line: TransitionLine):
         self.delete(line.canvas_item_id)
         self.delete(line.handle_id)
         self.delete(line.text_item_id)
-        if line in self.lines: self.lines.remove(line)
+        self.diagram.remove_line(line)
 
     def _remove_node_visuals(self, node):
         self.delete(node.canvas_item_id)
@@ -506,8 +541,14 @@ class GraphCanvas(tk.Canvas):
             node = self.nodes[node_id]
             old_data = {'name': node.name, 'is_reset_state': node.is_reset_state, 'actions': node.actions[:]}
 
-            editor = StateEditor(self.winfo_toplevel(), node)
+            other_names = [n.name for n in self.nodes.values() if n.id != node.id]
+            editor = StateEditor(self.winfo_toplevel(), node, existing_names=other_names)
             if editor._was_confirmed:
+                # FIX 1.6: at most one reset state. If this node was just
+                # made the reset state, clear the flag on every other node.
+                if node.is_reset_state:
+                    # FIX 1.6 via Diagram (3.1): exactly one reset state
+                    self.diagram.set_reset_state(node.id)
                 new_data = {'name': node.name, 'is_reset_state': node.is_reset_state, 'actions': node.actions[:]}
                 self.itemconfig(node.text_item_id, text=node.name)
                 details_txt = "\n".join(node.actions)
@@ -543,21 +584,11 @@ class GraphCanvas(tk.Canvas):
     # ==========================================
 
     def create_state(self, x, y):
-        r = BUBBLE_RADIUS
-        node_id = self.node_counter
-        name = f"S{node_id}"
-        is_first = (self.node_counter == 0)
-
-        # New: Offsets are logic distances
-        det_off_x = BUBBLE_RADIUS + 5
-        det_off_y = -BUBBLE_RADIUS
-
-        new_node = StateNode(
-            id=node_id, name=name, x=x, y=y,
-            details_offset_x=det_off_x, details_offset_y=det_off_y,
-            is_reset_state=is_first
-        )
-        self.node_counter += 1
+        # FIX 3.1: the Diagram allocates the id/name and reset flag
+        new_node = self.diagram.new_state(x, y)
+        # Offsets are logic distances
+        new_node.details_offset_x = BUBBLE_RADIUS + 5
+        new_node.details_offset_y = -BUBBLE_RADIUS
 
         cmd = AddStateCommand(self, new_node)
         self.history.execute(cmd)
@@ -566,16 +597,13 @@ class GraphCanvas(tk.Canvas):
 
     def create_transition(self, start_id, end_id):
         is_loop = (start_id == end_id)
-        curv = 50 if is_loop else -40  # Logic units
-        angle = -math.pi / 2 if is_loop else 0
-
-        new_transition = TransitionLine(
-            id=self.line_counter,
-            start_state_id=start_id, end_state_id=end_id,
-            curvature=curv, loop_angle=angle,
+        # FIX 3.1: the Diagram allocates the id
+        new_transition = self.diagram.new_transition(
+            start_id, end_id,
+            curvature=50 if is_loop else -40,  # Logic units
+            loop_angle=-math.pi / 2 if is_loop else 0,
             text_offset_y=-15.0  # Logic unit offset
         )
-        self.line_counter += 1
 
         cmd = AddTransitionCommand(self, new_transition)
         self.history.execute(cmd)
@@ -663,10 +691,11 @@ class GraphCanvas(tk.Canvas):
         toff_y = self._to_screen(line.text_offset_y)
         self.coords(line.text_item_id, hx + toff_x, hy + toff_y)
 
+    # FIX 1.1: this method was defined twice; the duplicate at the end
+    # of the file has been removed.
     def _update_lines_for_node(self, node_id):
-        for line in self.lines:
-            if line.start_state_id == node_id or line.end_state_id == node_id:
-                self._update_specific_line(line)
+        for line in self.diagram.lines_touching(node_id):
+            self._update_specific_line(line)
 
     # --- Math & Lookup Helpers ---
     def _get_node_id_from_items(self, items):
@@ -766,8 +795,3 @@ class GraphCanvas(tk.Canvas):
         dist = math.sqrt(dx ** 2 + dy ** 2)
         if dist == 0: return mid_x, mid_y
         return mid_x + ((-dy / dist) * curvature), mid_y + ((dx / dist) * curvature)
-
-    def _update_lines_for_node(self, node_id):
-        for line in self.lines:
-            if line.start_state_id == node_id or line.end_state_id == node_id:
-                self._update_specific_line(line)
