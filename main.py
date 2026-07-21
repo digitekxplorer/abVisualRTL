@@ -1,12 +1,38 @@
+"""abVisualRTL — a Python-based CAD tool for visually designing Finite
+State Machines (FSMs) and generating synthesizable SystemVerilog and
+VHDL code. Features a drag-and-drop editor with B-spline transitions,
+live HDL preview, Moore/Mealy actions with transition priorities,
+undo/redo, JSON persistence, and PNG/PDF diagram export.
+
+History
+-------
+2026-07  Code-review update:
+  - Fixed VHDL generator bugs: empty sensitivity list with no input
+    ports; dangling else / stray "end if" on default transitions.
+  - Latch prevention: outputs get per-port default values at the top of
+    the combinational block in both generators.
+  - Validation: HDL identifier + reserved-word checks (SV and VHDL),
+    duplicate state/port names, clock/reset collisions, duplicate
+    transition priorities — enforced in dialogs and at generation.
+  - Exact state-register bit-width via bit_length() (no float log2).
+  - Single reset state enforced; dirty-flag and preview-focus fixes.
+  - PNG/PDF export rewritten as a pure-Pillow off-screen renderer
+    (HiDPI-safe, full diagram, no Ghostscript).
+  - Grid drawing limited to visible region (was ~62k canvas items).
+  - Architecture: Diagram data model extracted from the canvas; shared
+    generator helpers deduplicated; project-file schema validation on
+    load; pytest suite for the generators (25 tests).
+"""
 import tkinter as tk
 from tkinter import messagebox, filedialog, ttk
 import os
 
-# Image Library for Export
+# Image Library for Export (FIX 5.1 rev 2: pure-Pillow renderer, no
+# screen grab and no Ghostscript)
 try:
-    from PIL import ImageGrab
+    from nugui.utils.diagram_export import export_diagram
 except ImportError:
-    ImageGrab = None
+    export_diagram = None
 
 # UI Components
 from nugui.ui.canvas import GraphCanvas
@@ -76,10 +102,17 @@ class abVisualRTLApp(tk.Tk):
         self._setup_preview_panel()
 
         # --- Bindings ---
-        self.bind("<Delete>", lambda event: self.delete_selection())
-        self.bind("<BackSpace>", lambda event: self.delete_selection())
-        self.bind("<Control-z>", lambda event: self.undo())
-        self.bind("<Control-y>", lambda event: self.redo())
+        # FIX 1.5: guard destructive shortcuts so they don't fire while the
+        # user is focused in a text-entry widget.
+        self.bind("<Delete>", lambda event: self._shortcut(self.delete_selection))
+        self.bind("<BackSpace>", lambda event: self._shortcut(self.delete_selection))
+        self.bind("<Control-z>", lambda event: self._shortcut(self.undo))
+        self.bind("<Control-y>", lambda event: self._shortcut(self.redo))
+        # FIX 5.3: redo alias + file accelerators
+        self.bind("<Control-Shift-Z>", lambda event: self._shortcut(self.redo))
+        self.bind("<Control-s>", lambda event: self.save_project())
+        self.bind("<Control-o>", lambda event: self.open_project())
+        self.bind("<Control-n>", lambda event: self.new_project())
 
         # The canvas triggers this event whenever data changes
         self.canvas.bind("<<DiagramChanged>>", self.on_diagram_changed)
@@ -87,18 +120,26 @@ class abVisualRTLApp(tk.Tk):
         # Intercept Window Close Button (X)
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
+    def _shortcut(self, action):
+        """Runs a destructive shortcut only when focus is not in a
+        text-entry widget (FIX 1.5)."""
+        widget = self.focus_get()
+        if isinstance(widget, (tk.Text, tk.Entry, ttk.Entry, tk.Spinbox, ttk.Spinbox)):
+            return
+        action()
+
     def _setup_menus(self):
         self.menubar = tk.Menu(self)
         self.config(menu=self.menubar)
 
         # File Menu
         file_menu = tk.Menu(self.menubar, tearoff=0)
-        file_menu.add_command(label="New Project", command=self.new_project)
-        file_menu.add_command(label="Open Project...", command=self.open_project)
-        file_menu.add_command(label="Save Project", command=self.save_project)
+        file_menu.add_command(label="New Project", command=self.new_project, accelerator="Ctrl+N")
+        file_menu.add_command(label="Open Project...", command=self.open_project, accelerator="Ctrl+O")
+        file_menu.add_command(label="Save Project", command=self.save_project, accelerator="Ctrl+S")
         file_menu.add_command(label="Save Project As...", command=self.save_project_as)
         file_menu.add_separator()
-        file_menu.add_command(label="Export Diagram to PNG...", command=self.export_png)
+        file_menu.add_command(label="Export Diagram (PNG / PDF)...", command=self.export_image)
         file_menu.add_separator()
         file_menu.add_command(label="Generate SystemVerilog...", command=self.generate_sv)
         file_menu.add_command(label="Generate VHDL...", command=self.generate_vhdl)
@@ -196,9 +237,18 @@ class abVisualRTLApp(tk.Tk):
         tk.Button(ctrl_frame, text="Refresh", command=lambda: self.update_code_preview(None)).pack(side=tk.RIGHT,
                                                                                                    padx=5)
 
+        # FIX 1.5: the preview is read-only. Text is inserted via
+        # _set_preview_text, which temporarily re-enables the widget.
         self.txt_preview = tk.Text(self.preview_frame, bg="#fafafa", font=("Consolas", 10))
         self.txt_preview.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        self.txt_preview.insert("1.0", "// Draw a state machine to see code here...")
+        self._set_preview_text("// Draw a state machine to see code here...")
+
+    def _set_preview_text(self, text):
+        """Replaces preview contents; keeps the widget read-only otherwise."""
+        self.txt_preview.config(state=tk.NORMAL)
+        self.txt_preview.delete("1.0", tk.END)
+        self.txt_preview.insert("1.0", text)
+        self.txt_preview.config(state=tk.DISABLED)
 
     # ==========================================
     # Modification & State Handling
@@ -240,7 +290,9 @@ class abVisualRTLApp(tk.Tk):
 
     def on_closing(self):
         if self.prompt_save_if_needed():
-            self.quit()
+            # FIX 5.3: destroy() tears the window down cleanly;
+            # quit() only exits mainloop and can leave the window alive.
+            self.destroy()
 
     # ==========================================
     # Logic Handlers
@@ -262,24 +314,19 @@ class abVisualRTLApp(tk.Tk):
     def update_code_preview(self, event):
         if not self.var_show_code.get(): return
         if not self.canvas.nodes:
-            self.txt_preview.delete("1.0", tk.END)
-            self.txt_preview.insert("1.0", "// No states defined.")
+            self._set_preview_text("// No states defined.")
             return
 
         lang = self.preview_lang.get()
-        generator = None
         if lang == "SystemVerilog":
             generator = SystemVerilogGenerator(self.project_settings, self.canvas.nodes, self.canvas.lines)
         else:
             generator = VHDLGenerator(self.project_settings, self.canvas.nodes, self.canvas.lines)
 
         try:
-            code = generator.generate()
-            self.txt_preview.delete("1.0", tk.END)
-            self.txt_preview.insert("1.0", code)
+            self._set_preview_text(generator.generate())
         except Exception as e:
-            self.txt_preview.delete("1.0", tk.END)
-            self.txt_preview.insert("1.0", f"// Error generating preview:\n// {str(e)}")
+            self._set_preview_text(f"// Error generating preview:\n// {str(e)}")
 
     def set_tool(self, tool):
         self.canvas.set_tool(tool)
@@ -289,9 +336,11 @@ class abVisualRTLApp(tk.Tk):
         self.canvas.toggle_details(self.var_show_details.get())
 
     def open_settings(self):
-        ProjectSettingsDialog(self, self.project_settings)
-        self.mark_modified(True)  # Settings change counts as modification
-        self.update_code_preview(None)
+        # FIX 1.4: only mark modified if the user confirmed the dialog.
+        dialog = ProjectSettingsDialog(self, self.project_settings)
+        if getattr(dialog, "_was_confirmed", False):
+            self.mark_modified(True)
+            self.update_code_preview(None)
 
     def delete_selection(self):
         self.canvas.delete_selected()
@@ -327,26 +376,28 @@ class abVisualRTLApp(tk.Tk):
             with open(file_path, "w") as f: f.write(code)
             messagebox.showinfo("Success", f"Saved to {file_path}")
 
-    def export_png(self):
-        if ImageGrab is None:
+    def export_image(self):
+        """FIX 5.1 (rev 2): render the FULL diagram off-screen with Pillow
+        from the data model - HiDPI-safe, no Ghostscript, no window
+        overlap, not limited to the visible viewport. PNG or PDF."""
+        if export_diagram is None:
             messagebox.showerror("Missing Library", "The 'Pillow' library is required.\nPlease run: pip install Pillow")
             return
 
-        if not self.canvas.find_all():
+        if not self.canvas.nodes:
             messagebox.showwarning("Export Error", "Canvas is empty.")
             return
 
-        file_path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG Image", "*.png")])
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            initialfile=self.project_settings.project_name,
+            filetypes=[("PNG Image", "*.png"), ("PDF Document", "*.pdf")],
+            title="Export Diagram")
         if not file_path: return
 
         try:
-            self.update_idletasks()
-            x = self.canvas.winfo_rootx()
-            y = self.canvas.winfo_rooty()
-            w = self.canvas.winfo_width()
-            h = self.canvas.winfo_height()
-            img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
-            img.save(file_path)
+            export_diagram(file_path, self.canvas.nodes, self.canvas.lines,
+                           show_details=self.var_show_details.get())
             messagebox.showinfo("Success", f"Exported to {file_path}")
         except Exception as e:
             messagebox.showerror("Export Error", str(e))
