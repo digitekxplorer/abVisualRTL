@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox
 from nugui.ui.dialogs.base import BaseDialog
 from nugui.models.project import ProjectSettings
 from nugui.models.ports import Port, PortDirection
+from nugui.utils.hdl_validation import validate_identifier
 
 
 class ProjectSettingsDialog(BaseDialog):
@@ -74,20 +75,27 @@ class ProjectSettingsDialog(BaseDialog):
         self.var_p_width = tk.IntVar(value=1)
         ttk.Spinbox(frm_input, from_=1, to=128, textvariable=self.var_p_width, width=3).pack(side="left", padx=5)
 
+        # FIX 5.5: default value used for latch prevention (outputs only)
+        ttk.Label(frm_input, text="Default:").pack(side="left")
+        self.var_p_default = tk.StringVar(value="0")
+        ttk.Entry(frm_input, textvariable=self.var_p_default, width=6).pack(side="left", padx=5)
+
         ttk.Button(frm_input, text="Add", command=self.on_add_port).pack(side="left", padx=10)
         ttk.Button(frm_input, text="Remove Selected", command=self.on_remove_port).pack(side="right")
 
         # 2. Treeview (List)
-        cols = ("Name", "Direction", "Width")
+        cols = ("Name", "Direction", "Width", "Default")
         self.tree = ttk.Treeview(self.tab_ports, columns=cols, show="headings", height=8)
 
         self.tree.heading("Name", text="Name")
         self.tree.heading("Direction", text="Direction")
         self.tree.heading("Width", text="Width")
+        self.tree.heading("Default", text="Default")
 
         self.tree.column("Name", width=100)
         self.tree.column("Direction", width=60)
         self.tree.column("Width", width=50)
+        self.tree.column("Default", width=60)
 
         self.tree.pack(fill="both", expand=True)
         self._refresh_port_list()
@@ -98,17 +106,24 @@ class ProjectSettingsDialog(BaseDialog):
             self.tree.delete(i)
         # Populate from temp_ports
         for p in self.temp_ports:
-            self.tree.insert("", "end", values=(p.name, p.direction.value, p.width))
+            self.tree.insert("", "end", values=(p.name, p.direction.value, p.width, p.default_value))
 
     def on_add_port(self):
         name = self.var_p_name.get().strip()
-        if not name:
-            messagebox.showerror("Error", "Port name cannot be empty")
+        # FIX 2.3: enforce a legal SV+VHDL identifier
+        err = validate_identifier(name, "Port name")
+        if err:
+            messagebox.showerror("Error", err, parent=self)
             return
 
-        # Check duplicates
-        if any(p.name == name for p in self.temp_ports):
-            messagebox.showerror("Error", "Port name already exists")
+        # FIX 2.4: duplicates (case-insensitive - VHDL folds case) and
+        # collisions with the clock/reset names
+        low = name.lower()
+        if any(p.name.lower() == low for p in self.temp_ports):
+            messagebox.showerror("Error", "Port name already exists", parent=self)
+            return
+        if low in (self.var_clk.get().strip().lower(), self.var_rst.get().strip().lower()):
+            messagebox.showerror("Error", f"'{name}' collides with the clock/reset name", parent=self)
             return
 
         direction_map = {
@@ -120,13 +135,15 @@ class ProjectSettingsDialog(BaseDialog):
         new_port = Port(
             name=name,
             direction=direction_map[self.var_p_dir.get()],
-            width=self.var_p_width.get()
+            width=self.var_p_width.get(),
+            default_value=self.var_p_default.get().strip() or "0"  # FIX 5.5
         )
         self.temp_ports.append(new_port)
         self._refresh_port_list()
 
         # Clear input
         self.var_p_name.set("")
+        self.var_p_default.set("0")
 
     def on_remove_port(self):
         selected = self.tree.selection()
@@ -139,6 +156,17 @@ class ProjectSettingsDialog(BaseDialog):
 
         self.temp_ports = [p for p in self.temp_ports if p.name != name_to_del]
         self._refresh_port_list()
+
+    def validate(self):
+        # FIX 2.3: module, clock, and reset names must be legal identifiers
+        for value, what in [(self.var_name.get(), "Module name"),
+                            (self.var_clk.get(), "Clock name"),
+                            (self.var_rst.get(), "Reset name")]:
+            err = validate_identifier(value.strip(), what)
+            if err:
+                messagebox.showerror("Error", err, parent=self)
+                return False
+        return True
 
     def apply(self):
         # Commit general settings
