@@ -33,17 +33,35 @@ class AddTransitionCommand(Command):
         self.canvas._remove_line(self.line)
 
 
+class AddAnnotationCommand(Command):
+    """FEATURE: add a free-floating text annotation."""
+
+    def __init__(self, canvas, annotation):
+        self.canvas = canvas
+        self.annotation = annotation
+
+    def execute(self):
+        if self.annotation.id not in self.canvas.annotations:
+            self.canvas.restore_annotation(self.annotation)
+
+    def undo(self):
+        self.canvas._remove_annotation(self.annotation.id)
+
+
 class DeleteCommand(Command):
-    def __init__(self, canvas, nodes, lines):
+    def __init__(self, canvas, nodes, lines, annotations=None):
         self.canvas = canvas
         self.nodes = nodes  # List of StateNode objects
         self.lines = lines  # List of TransitionLine objects
+        self.annotations = annotations or []  # List of TextAnnotation objects
 
     def execute(self):
         for line in self.lines:
             self.canvas._remove_line(line)
         for node in self.nodes:
             self.canvas._remove_node(node.id)
+        for ann in self.annotations:
+            self.canvas._remove_annotation(ann.id)
 
     def undo(self):
         # Restore Nodes first
@@ -52,12 +70,45 @@ class DeleteCommand(Command):
         # Restore Lines
         for line in self.lines:
             self.canvas.restore_line(line)
+        # Restore Annotations
+        for ann in self.annotations:
+            self.canvas.restore_annotation(ann)
+
+
+class AddGroupCommand(Command):
+    """FEATURE: paste — add a group of nodes/lines/annotations as one
+    undoable action (inverse of DeleteCommand)."""
+
+    def __init__(self, canvas, nodes, lines, annotations):
+        self.canvas = canvas
+        self.nodes = nodes
+        self.lines = lines
+        self.annotations = annotations
+
+    def execute(self):
+        for node in self.nodes:
+            if node.id not in self.canvas.nodes:
+                self.canvas.restore_node(node)
+        for line in self.lines:
+            if line not in self.canvas.lines:
+                self.canvas.restore_line(line)
+        for ann in self.annotations:
+            if ann.id not in self.canvas.annotations:
+                self.canvas.restore_annotation(ann)
+
+    def undo(self):
+        for line in self.lines:
+            self.canvas._remove_line(line)
+        for node in self.nodes:
+            self.canvas._remove_node(node.id)
+        for ann in self.annotations:
+            self.canvas._remove_annotation(ann.id)
 
 
 class MoveCommand(Command):
     def __init__(self, canvas, item_type, item_obj, old_state, new_state):
         self.canvas = canvas
-        self.item_type = item_type  # 'node', 'handle', 'text'
+        self.item_type = item_type  # 'node', 'handle', 'text', 'annotation'
         self.item_obj = item_obj
         self.old_state = old_state  # Dict of relevant fields (x, y, offsets, etc)
         self.new_state = new_state
@@ -97,6 +148,27 @@ class MoveCommand(Command):
             self.item_obj.text_offset_y = state['text_offset_y']
             self.canvas._update_specific_line(self.item_obj)
 
+        elif self.item_type == 'annotation':
+            self.item_obj.x = state['x']
+            self.item_obj.y = state['y']
+            self.canvas._redraw_annotation(self.item_obj)
+
+
+class GroupMoveCommand(Command):
+    """FEATURE: move several objects as one undoable action. Wraps a list of
+    individual MoveCommands and applies/reverts them together."""
+
+    def __init__(self, moves):
+        self.moves = list(moves)  # list of MoveCommand
+
+    def execute(self):
+        for m in self.moves:
+            m.execute()
+
+    def undo(self):
+        for m in self.moves:
+            m.undo()
+
 
 class EditPropertyCommand(Command):
     def __init__(self, canvas, obj, old_data_dict, new_data_dict):
@@ -117,6 +189,6 @@ class EditPropertyCommand(Command):
             setattr(self.obj, key, value)
 
         # Refresh Visuals
-        if hasattr(self.obj, 'text_item_id'):
-            # It's a node or line
+        if hasattr(self.obj, 'text_item_id') or hasattr(self.obj, 'canvas_item_id'):
+            # It's a node, line, or annotation
             self.canvas.refresh_visuals(self.obj)
