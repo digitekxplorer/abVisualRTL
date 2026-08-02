@@ -5,15 +5,18 @@ file-IO, validation, and tests never need a live Tk canvas. The canvas
 renders a Diagram and mutates it through these methods.
 """
 from typing import Dict, List, Optional
-from nugui.models.elements import StateNode, TransitionLine
+from nugui.models.elements import StateNode, TransitionLine, TextAnnotation
 
 
 class Diagram:
     def __init__(self):
         self.nodes: Dict[int, StateNode] = {}
         self.lines: List[TransitionLine] = []
+        # FEATURE: free-floating text annotations (cosmetic, not part of FSM)
+        self.annotations: Dict[int, TextAnnotation] = {}
         self.node_counter: int = 0
         self.line_counter: int = 0
+        self.annotation_counter: int = 0
 
     # ---- Creation ----
 
@@ -32,6 +35,12 @@ class Diagram:
         return TransitionLine(id=line_id, start_state_id=start_id,
                               end_state_id=end_id, **kw)
 
+    def new_annotation(self, x, y, **kw) -> TextAnnotation:
+        """Creates (but does not add) the next text annotation."""
+        ann_id = self.annotation_counter
+        self.annotation_counter += 1
+        return TextAnnotation(id=ann_id, x=x, y=y, **kw)
+
     # ---- Mutation ----
 
     def add_node(self, node: StateNode):
@@ -40,6 +49,9 @@ class Diagram:
     def add_line(self, line: TransitionLine):
         self.lines.append(line)
 
+    def add_annotation(self, ann: TextAnnotation):
+        self.annotations[ann.id] = ann
+
     def remove_node(self, node_id: int) -> Optional[StateNode]:
         return self.nodes.pop(node_id, None)
 
@@ -47,18 +59,26 @@ class Diagram:
         if line in self.lines:
             self.lines.remove(line)
 
+    def remove_annotation(self, ann_id: int) -> Optional[TextAnnotation]:
+        return self.annotations.pop(ann_id, None)
+
     def clear(self):
         self.nodes = {}
         self.lines = []
+        self.annotations = {}
         self.node_counter = 0
         self.line_counter = 0
+        self.annotation_counter = 0
 
-    def load(self, nodes: Dict[int, StateNode], lines: List[TransitionLine]):
+    def load(self, nodes: Dict[int, StateNode], lines: List[TransitionLine],
+             annotations: Optional[Dict[int, TextAnnotation]] = None):
         """Replaces contents and re-syncs the ID counters."""
         self.nodes = dict(nodes)
         self.lines = list(lines)
+        self.annotations = dict(annotations or {})
         self.node_counter = max(self.nodes.keys(), default=-1) + 1
         self.line_counter = max((l.id for l in self.lines), default=-1) + 1
+        self.annotation_counter = max(self.annotations.keys(), default=-1) + 1
 
     # ---- Queries ----
 
