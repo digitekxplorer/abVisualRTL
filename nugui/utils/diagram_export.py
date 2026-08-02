@@ -8,12 +8,14 @@ from PIL import Image, ImageDraw, ImageFont
 
 from nugui.utils.constants import BUBBLE_RADIUS
 
-# Colors matched to the canvas
+# Colors matched to the canvas.
+# FEATURE: every text element renders in solid black on export so printed
+# copies stay legible (on-screen detail/label text may be a lighter blue).
 COL_STATE_FILL = "#e8f0fe"
 COL_STATE_OUTLINE = "#1a56db"
 COL_LINE = "#333333"
 COL_TEXT = "#000000"
-COL_DETAIL = "#0000ff"
+COL_DETAIL = "#000000"
 COL_BG = "#ffffff"
 
 SCALE = 3          # Supersample factor for crisp output
@@ -24,6 +26,36 @@ def _font(size):
     for name in ("arial.ttf", "Arial.ttf", "DejaVuSans.ttf"):
         try:
             return ImageFont.truetype(name, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+# Map common families + style to candidate TrueType filenames (Windows first,
+# then DejaVu on Linux), so exported annotations keep their font/bold/italic.
+_FONT_FILES = {
+    "arial": ("arial", "arialbd", "ariali", "arialbi"),
+    "times new roman": ("times", "timesbd", "timesi", "timesbi"),
+    "courier new": ("cour", "courbd", "couri", "courbi"),
+    "verdana": ("verdana", "verdanab", "verdanai", "verdanaz"),
+    "calibri": ("calibri", "calibrib", "calibrii", "calibriz"),
+    "georgia": ("georgia", "georgiab", "georgiai", "georgiaz"),
+    "tahoma": ("tahoma", "tahomabd", "tahoma", "tahomabd"),
+}
+_DEJAVU = {0: "DejaVuSans", 1: "DejaVuSans-Bold",
+           2: "DejaVuSans-Oblique", 3: "DejaVuSans-BoldOblique"}
+
+
+def _styled_font(family, size, bold=False, italic=False):
+    idx = (2 if italic else 0) + (1 if bold else 0)
+    names = []
+    base = _FONT_FILES.get((family or "Arial").lower())
+    if base:
+        names.append(base[idx] + ".ttf")
+    names += [f"{family}.ttf", _DEJAVU[idx] + ".ttf", "arial.ttf", "DejaVuSans.ttf"]
+    for n in names:
+        try:
+            return ImageFont.truetype(n, max(1, int(size)))
         except OSError:
             continue
     return ImageFont.load_default()
@@ -79,14 +111,17 @@ def _edge_point(center, toward, r):
     return (center[0] + dx / dist * r, center[1] + dy / dist * r)
 
 
-def render_diagram(nodes: dict, lines: list, show_details: bool = True) -> Image.Image:
+def render_diagram(nodes: dict, lines: list, show_details: bool = True,
+                   annotations: dict = None) -> Image.Image:
     """Renders the FSM to a PIL Image (RGB, white background)."""
-    if not nodes:
+    if not nodes and not annotations:
         raise ValueError("No states to export.")
+    annotations = annotations or {}
 
-    # Bounding box in logic coordinates (include loop extents roughly)
-    xs = [n.x for n in nodes.values()]
-    ys = [n.y for n in nodes.values()]
+    # Bounding box in logic coordinates (include loop extents roughly, plus
+    # any free-floating text annotations so they are never clipped).
+    xs = [n.x for n in nodes.values()] + [a.x for a in annotations.values()]
+    ys = [n.y for n in nodes.values()] + [a.y for a in annotations.values()]
     pad = BUBBLE_RADIUS + 80 + MARGIN
     x0, y0 = min(xs) - pad, min(ys) - pad
     x1, y1 = max(xs) + pad, max(ys) + pad
@@ -158,12 +193,23 @@ def render_diagram(nodes: dict, lines: list, show_details: bool = True) -> Image
             draw.text((cx + node.details_offset_x * SCALE, cy + node.details_offset_y * SCALE),
                       "\n".join(node.actions), fill=COL_DETAIL, font=font_small)
 
+    # --- Free-floating text annotations (always drawn, always black) ---
+    for ann in annotations.values():
+        ax, ay = T(ann.x, ann.y)
+        font = _styled_font(getattr(ann, "font_family", "Arial"),
+                            int(ann.font_size) * SCALE,
+                            bold=getattr(ann, "bold", False),
+                            italic=getattr(ann, "italic", False))
+        draw.multiline_text((ax, ay), ann.text, fill=COL_TEXT, font=font,
+                            anchor="mm", align=getattr(ann, "align", "left"))
+
     return img
 
 
-def export_diagram(file_path: str, nodes: dict, lines: list, show_details: bool = True):
+def export_diagram(file_path: str, nodes: dict, lines: list,
+                   show_details: bool = True, annotations: dict = None):
     """Renders and saves as PNG or PDF based on the file extension."""
-    img = render_diagram(nodes, lines, show_details)
+    img = render_diagram(nodes, lines, show_details, annotations)
     if file_path.lower().endswith(".pdf"):
         img.save(file_path, "PDF", resolution=72.0 * SCALE)
     else:
