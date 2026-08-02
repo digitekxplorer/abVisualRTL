@@ -22,6 +22,22 @@ History
   - Architecture: Diagram data model extracted from the canvas; shared
     generator helpers deduplicated; project-file schema validation on
     load; pytest suite for the generators (25 tests).
+
+2026-08  Feature update:
+  - Text annotations: an "Add Text" tool drops free-floating labels
+    (font family/size, bold, italic, alignment) that are cosmetic only
+    (never affect generated HDL); saved with the project and included in
+    PNG/PDF export. All exported text renders solid black for print
+    legibility.
+  - Group selection: Shift-click to multi-select, or rubber-band
+    marquee-drag to select everything a box touches; move the whole
+    group together (snapped, one undoable step) and delete it as one
+    action.
+  - Group copy/paste (Ctrl+C / Ctrl+V): duplicates a sub-machine with
+    fresh IDs and unique state names; internal transitions rewire to the
+    copies; pasted states are never marked reset.
+  - Toolbar: added a Save button; explicit "Export as PNG/PDF" menu
+    items (removes the ambiguous single Export dialog).
 """
 import tkinter as tk
 from tkinter import messagebox, filedialog, ttk
@@ -113,6 +129,9 @@ class abVisualRTLApp(tk.Tk):
         self.bind("<Control-s>", lambda event: self.save_project())
         self.bind("<Control-o>", lambda event: self.open_project())
         self.bind("<Control-n>", lambda event: self.new_project())
+        # FEATURE: group copy/paste (guarded so they don't fire in text entry)
+        self.bind("<Control-c>", lambda event: self._shortcut(self.copy_selection))
+        self.bind("<Control-v>", lambda event: self._shortcut(self.paste_clipboard))
 
         # The canvas triggers this event whenever data changes
         self.canvas.bind("<<DiagramChanged>>", self.on_diagram_changed)
@@ -139,7 +158,8 @@ class abVisualRTLApp(tk.Tk):
         file_menu.add_command(label="Save Project", command=self.save_project, accelerator="Ctrl+S")
         file_menu.add_command(label="Save Project As...", command=self.save_project_as)
         file_menu.add_separator()
-        file_menu.add_command(label="Export Diagram (PNG / PDF)...", command=self.export_image)
+        file_menu.add_command(label="Export Diagram as PNG...", command=lambda: self.export_image("png"))
+        file_menu.add_command(label="Export Diagram as PDF...", command=lambda: self.export_image("pdf"))
         file_menu.add_separator()
         file_menu.add_command(label="Generate SystemVerilog...", command=self.generate_sv)
         file_menu.add_command(label="Generate VHDL...", command=self.generate_vhdl)
@@ -151,6 +171,9 @@ class abVisualRTLApp(tk.Tk):
         edit_menu = tk.Menu(self.menubar, tearoff=0)
         edit_menu.add_command(label="Undo", command=self.undo, accelerator="Ctrl+Z")
         edit_menu.add_command(label="Redo", command=self.redo, accelerator="Ctrl+Y")
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Copy", command=self.copy_selection, accelerator="Ctrl+C")
+        edit_menu.add_command(label="Paste", command=self.paste_clipboard, accelerator="Ctrl+V")
         edit_menu.add_separator()
         edit_menu.add_command(label="Delete", command=self.delete_selection, accelerator="Del")
         self.menubar.add_cascade(label="Edit", menu=edit_menu)
@@ -176,6 +199,14 @@ class abVisualRTLApp(tk.Tk):
         self.btn_line = tk.Button(self.toolbar, text="Add Transition",
                                   command=lambda: self.set_tool(ToolType.LINE))
         self.btn_line.pack(side=tk.LEFT, padx=2, pady=2)
+
+        self.btn_text = tk.Button(self.toolbar, text="Add Text",
+                                  command=lambda: self.set_tool(ToolType.TEXT))
+        self.btn_text.pack(side=tk.LEFT, padx=2, pady=2)
+
+        self.btn_save = tk.Button(self.toolbar, text="Save",
+                                  command=self.save_project)
+        self.btn_save.pack(side=tk.LEFT, padx=2, pady=2)
 
         self.btn_delete = tk.Button(self.toolbar, text="Delete", fg="red",
                                     command=self.delete_selection)
@@ -345,6 +376,12 @@ class abVisualRTLApp(tk.Tk):
     def delete_selection(self):
         self.canvas.delete_selected()
 
+    def copy_selection(self):
+        self.canvas.copy_selection()
+
+    def paste_clipboard(self):
+        self.canvas.paste_clipboard()
+
     def undo(self):
         self.canvas.undo()
 
@@ -376,10 +413,12 @@ class abVisualRTLApp(tk.Tk):
             with open(file_path, "w") as f: f.write(code)
             messagebox.showinfo("Success", f"Saved to {file_path}")
 
-    def export_image(self):
-        """FIX 5.1 (rev 2): render the FULL diagram off-screen with Pillow
-        from the data model - HiDPI-safe, no Ghostscript, no window
-        overlap, not limited to the visible viewport. PNG or PDF."""
+    def export_image(self, fmt="png"):
+        """FIX 5.1 (rev 3): render the FULL diagram off-screen with Pillow
+        from the data model - HiDPI-safe, no Ghostscript, no window overlap,
+        not limited to the visible viewport. Format is chosen explicitly by
+        the caller (png/pdf) so the extension is never ambiguous - Tk's
+        filter/typevariable detection is unreliable on Windows."""
         if export_diagram is None:
             messagebox.showerror("Missing Library", "The 'Pillow' library is required.\nPlease run: pip install Pillow")
             return
@@ -388,16 +427,27 @@ class abVisualRTLApp(tk.Tk):
             messagebox.showwarning("Export Error", "Canvas is empty.")
             return
 
+        fmt = fmt.lower()
+        ext = ".pdf" if fmt == "pdf" else ".png"
+        type_label = "PDF Document" if fmt == "pdf" else "PNG Image"
+        # Single-filter dialog: the format is already decided, so whatever Tk
+        # appends can only be `ext`, and we normalize the tail regardless.
         file_path = filedialog.asksaveasfilename(
-            defaultextension=".png",
+            defaultextension=ext,
             initialfile=self.project_settings.project_name,
-            filetypes=[("PNG Image", "*.png"), ("PDF Document", "*.pdf")],
-            title="Export Diagram")
+            filetypes=[(type_label, "*" + ext), ("All Files", "*.*")],
+            title="Export Diagram as " + fmt.upper())
         if not file_path: return
+
+        # Guarantee the extension matches the chosen format no matter what the
+        # native dialog returned (missing ext, wrong ext, double ext).
+        if not file_path.lower().endswith(ext):
+            file_path += ext
 
         try:
             export_diagram(file_path, self.canvas.nodes, self.canvas.lines,
-                           show_details=self.var_show_details.get())
+                           show_details=self.var_show_details.get(),
+                           annotations=self.canvas.annotations)
             messagebox.showinfo("Success", f"Exported to {file_path}")
         except Exception as e:
             messagebox.showerror("Export Error", str(e))
@@ -434,8 +484,8 @@ class abVisualRTLApp(tk.Tk):
 
     def _perform_save(self, path):
         try:
-            nodes, lines = self.canvas.save_data_snapshot()
-            FileManager.save_project(path, self.project_settings, nodes, lines)
+            nodes, lines, annotations = self.canvas.save_data_snapshot()
+            FileManager.save_project(path, self.project_settings, nodes, lines, annotations)
 
             self.current_filepath = path
             self.mark_modified(False)
@@ -456,7 +506,7 @@ class abVisualRTLApp(tk.Tk):
             try:
                 data = FileManager.load_project(file_path)
                 self.project_settings = data["settings"]
-                self.canvas.load_from_data(data["nodes"], data["lines"])
+                self.canvas.load_from_data(data["nodes"], data["lines"], data.get("annotations"))
 
                 self.current_filepath = file_path
                 self.mark_modified(False)
