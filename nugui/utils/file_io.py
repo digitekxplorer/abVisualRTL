@@ -1,7 +1,7 @@
 import json
 from typing import Dict, Any, List
 from nugui.models.project import ProjectSettings
-from nugui.models.elements import StateNode, TransitionLine
+from nugui.models.elements import StateNode, TransitionLine, TextAnnotation
 
 FILE_VERSION = "1.0"
 SUPPORTED_VERSIONS = {"1.0"}
@@ -15,13 +15,16 @@ class ProjectFileError(Exception):
 class FileManager:
     @staticmethod
     def save_project(filepath: str, settings: ProjectSettings,
-                     nodes: Dict[int, StateNode], lines: List[TransitionLine]):
+                     nodes: Dict[int, StateNode], lines: List[TransitionLine],
+                     annotations: Dict[int, TextAnnotation] = None):
         """Saves current state to a JSON file."""
+        annotations = annotations or {}
         data = {
             "version": FILE_VERSION,
             "settings": settings.to_dict(),
             "nodes": [node.to_dict() for node in nodes.values()],
-            "lines": [line.to_dict() for line in lines]
+            "lines": [line.to_dict() for line in lines],
+            "annotations": [a.to_dict() for a in annotations.values()]
         }
 
         with open(filepath, 'w') as f:
@@ -57,6 +60,11 @@ class FileManager:
             if not isinstance(data[key], typ):
                 raise ProjectFileError(f"Project file section '{key}' has the wrong type.")
 
+        # 'annotations' is optional (added after v1.0 files existed); default
+        # to empty and validate the type only when present.
+        if "annotations" in data and not isinstance(data["annotations"], list):
+            raise ProjectFileError("Project file section 'annotations' has the wrong type.")
+
         try:
             settings = ProjectSettings.from_dict(data["settings"])
 
@@ -68,6 +76,11 @@ class FileManager:
             lines = []
             for l_data in data["lines"]:
                 lines.append(TransitionLine.from_dict(l_data))
+
+            annotations = {}
+            for a_data in data.get("annotations", []):
+                ann = TextAnnotation.from_dict(a_data)
+                annotations[ann.id] = ann
         except (KeyError, TypeError, ValueError) as e:
             raise ProjectFileError(f"Project file contains invalid data:\n{e!r}") from e
 
@@ -80,5 +93,6 @@ class FileManager:
         return {
             "settings": settings,
             "nodes": nodes,
-            "lines": lines
+            "lines": lines,
+            "annotations": annotations
         }
