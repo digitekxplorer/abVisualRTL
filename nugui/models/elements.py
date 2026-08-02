@@ -107,4 +107,53 @@ class TransitionLine:
             priority=data.get("priority", 1),
             action=data.get("action", "")
         )
-    
+
+
+@dataclass
+class TextAnnotation:
+    """FEATURE: a free-floating text label placed anywhere on the diagram.
+
+    Purely cosmetic — it is not part of the FSM and never affects generated
+    HDL. Position is stored in logic coordinates like states/transitions.
+    """
+    id: int
+    x: float
+    y: float
+    text: str = "Text"
+    font_family: str = "Arial"
+    font_size: int = 12
+    bold: bool = False
+    italic: bool = False
+    align: str = "left"  # left | center | right
+    color: str = "#000000"
+    # Visual ID (Transient - do not save)
+    canvas_item_id: Optional[int] = field(default=None, repr=False)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "x": self.x,
+            "y": self.y,
+            "text": self.text,
+            "font_family": self.font_family,
+            "font_size": self.font_size,
+            "bold": self.bold,
+            "italic": self.italic,
+            "align": self.align,
+            "color": self.color,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'TextAnnotation':
+        return cls(
+            id=data["id"],
+            x=data["x"],
+            y=data["y"],
+            text=data.get("text", "Text"),
+            font_family=data.get("font_family", "Arial"),
+            font_size=data.get("font_size", 12),
+            bold=data.get("bold", False),
+            italic=data.get("italic", False),
+            align=data.get("align", "left"),
+            color=data.get("color", "#000000"),
+        )
