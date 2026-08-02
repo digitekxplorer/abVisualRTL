@@ -6,12 +6,13 @@ abVisualRTL bridges the gap between whiteboard logic design and hardware impleme
 
 ## Features
 
-- **Visual Editor** — Drag-and-drop interface for creating states and transitions, with smooth B-spline curves and grid snapping.
+- **Visual Editor** — Drag-and-drop interface for creating states and transitions, with smooth B-spline curves and grid snapping. Add free-floating **text annotations** (font, size, bold, italic, alignment) to label and document a diagram without affecting the generated HDL.
+- **Group Editing** — Shift-click or rubber-band marquee to select multiple objects, then move, delete, or copy/paste (Ctrl+C / Ctrl+V) a whole sub-machine in one step — pasted states get fresh unique names and their internal transitions rewire automatically.
 - **Multi-Language Support** — Generates production-ready SystemVerilog and VHDL.
 - **Live Preview** — Split-screen view updates the HDL code in real time as you draw.
 - **Logic Definition** — Moore actions (inside states), Mealy actions (on transitions), and complex transition logic with priority handling.
 - **Correct-by-Construction HDL** — Latch prevention via per-port default output values, identifier validation against SystemVerilog *and* VHDL reserved words, duplicate-name and priority-conflict detection before generation.
-- **Modern Workflow** — Undo/Redo history, JSON file persistence with schema validation, and PNG/PDF diagram export for documentation (no Ghostscript required).
+- **Modern Workflow** — Undo/Redo history, JSON file persistence with schema validation, and PNG/PDF diagram export for documentation (no Ghostscript required; all exported text renders solid black for print legibility).
 
 ## Requirements
 
@@ -36,9 +37,10 @@ python main.py
 
 1. **Draw states** — Select the State tool and click on the canvas. Double-click a state to name it, mark it as the reset state, and add Moore actions (one per line, e.g. `led = 1`).
 2. **Connect states** — Select the Line tool and drag from one state to another (or to itself for a self-loop). Double-click a transition to set its condition, Mealy action, and priority.
-3. **Configure the module** — Open Settings to set the module name, clock/reset signals, and I/O ports. Each output port takes a default value, emitted at the top of the combinational block to prevent latch inference.
-4. **Generate code** — The live preview updates as you draw. Export SystemVerilog or VHDL from the File menu.
-5. **Document** — Export the diagram as PNG or PDF.
+3. **Annotate & group** — Use the Text tool to drop labels on the canvas. With the Select tool, Shift-click or drag a marquee box to select several objects, then move, delete, or copy/paste them together.
+4. **Configure the module** — Open Settings to set the module name, clock/reset signals, and I/O ports. Each output port takes a default value, emitted at the top of the combinational block to prevent latch inference.
+5. **Generate code** — The live preview updates as you draw. Export SystemVerilog or VHDL from the File menu.
+6. **Document** — Export the diagram as PNG or PDF, or Save the project (Ctrl+S / toolbar Save button).
 
 ## Project Structure
 
