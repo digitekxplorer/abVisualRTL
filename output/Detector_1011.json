@@ -1,7 +1,7 @@
 {
     "version": "1.0",
     "settings": {
-        "project_name": "MyFSM",
+        "project_name": "Detector_1011",
         "clock_name": "clk",
         "reset_name": "rst_n",
         "reset_active_low": true,
@@ -80,7 +80,9 @@
             "details_offset_x": 35,
             "details_offset_y": -30,
             "is_reset_state": false,
-            "actions": []
+            "actions": [
+                "found = 1'b1"
+            ]
         }
     ],
     "lines": [
@@ -104,7 +106,7 @@
             "loop_angle": 0,
             "text_offset_x": 0.0,
             "text_offset_y": -15.0,
-            "condition": "din =='b1",
+            "condition": "din == 1'b1",
             "priority": 1,
             "action": ""
         },
@@ -145,30 +147,6 @@
             "action": ""
         },
         {
-            "id": 5,
-            "start_state_id": 4,
-            "end_state_id": 0,
-            "curvature": -40,
-            "loop_angle": 0,
-            "text_offset_x": 0.0,
-            "text_offset_y": -15.0,
-            "condition": "1",
-            "priority": 1,
-            "action": "found = 1'b1"
-        },
-        {
-            "id": 7,
-            "start_state_id": 1,
-            "end_state_id": 0,
-            "curvature": -40,
-            "loop_angle": 0,
-            "text_offset_x": -7.0,
-            "text_offset_y": -11.0,
-            "condition": "",
-            "priority": 2,
-            "action": ""
-        },
-        {
             "id": 9,
             "start_state_id": 2,
             "end_state_id": 0,
@@ -181,14 +159,50 @@
             "action": ""
         },
         {
-            "id": 11,
+            "id": 12,
+            "start_state_id": 1,
+            "end_state_id": 1,
+            "curvature": 40.802542327235685,
+            "loop_angle": -0.6350267353903137,
+            "text_offset_x": 0.0,
+            "text_offset_y": -15.0,
+            "condition": "1",
+            "priority": 2,
+            "action": ""
+        },
+        {
+            "id": 14,
             "start_state_id": 3,
-            "end_state_id": 0,
+            "end_state_id": 2,
             "curvature": -40,
             "loop_angle": 0,
             "text_offset_x": 0.0,
             "text_offset_y": -15.0,
-            "condition": "",
+            "condition": "1",
+            "priority": 2,
+            "action": ""
+        },
+        {
+            "id": 15,
+            "start_state_id": 4,
+            "end_state_id": 1,
+            "curvature": -40,
+            "loop_angle": 0,
+            "text_offset_x": 0.0,
+            "text_offset_y": -15.0,
+            "condition": "din == 1'b1",
+            "priority": 1,
+            "action": ""
+        },
+        {
+            "id": 16,
+            "start_state_id": 4,
+            "end_state_id": 2,
+            "curvature": -40,
+            "loop_angle": 0,
+            "text_offset_x": 0.0,
+            "text_offset_y": -15.0,
+            "condition": "1",
             "priority": 2,
             "action": ""
         }
