@@ -11,7 +11,8 @@ abVisualRTL bridges the gap between whiteboard logic design and hardware impleme
 - **Multi-Language Support** — Generates production-ready SystemVerilog and VHDL.
 - **Live Preview** — Split-screen view updates the HDL code in real time as you draw.
 - **Logic Definition** — Moore actions (inside states), Mealy actions (on transitions), and complex transition logic with priority handling.
-- **Correct-by-Construction HDL** — Latch prevention via per-port default output values, identifier validation against SystemVerilog *and* VHDL reserved words, duplicate-name and priority-conflict detection before generation.
+- **Correct-by-Construction HDL** — Latch prevention via per-port default output values, a `default`/`when others` clause that recovers to the reset state, identifier validation against SystemVerilog *and* VHDL reserved words, duplicate-name and priority-conflict detection before generation.
+- **Hardware-Verified Output** — The generated RTL has been validated in Xilinx Vivado. The tutorial's **Detector_1011** example (included in this repo) was run against a self-checking testbench (`tb_Detector_1011`) covering directed sequences, reset-mid-match, and a 20,000-cycle randomized fuzz — **20,117 cycles checked, 1,287 reference detections, 0 errors**.
 - **Modern Workflow** — Undo/Redo history, JSON file persistence with schema validation, and PNG/PDF diagram export for documentation (no Ghostscript required; all exported text renders solid black for print legibility).
 
 ## Requirements
