@@ -162,6 +162,8 @@ class VHDLGenerator(CodeGenerator):
 
             code.append("")  # Spacer
 
+        code.append(f"{self.indent(3)}when others =>")
+        code.append(f"{self.indent(4)}state_next <= {reset_node.name};")
         code.append(f"{self.indent(2)}end case;")
         code.append(f"{self.indent(1)}end process;")
         code.append("")
