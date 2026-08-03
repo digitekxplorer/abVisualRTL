@@ -153,6 +153,10 @@ class SystemVerilogGenerator(CodeGenerator):
 
             code.append(f"{self.indent(3)}end")
 
+        # Default clause: fall back to the reset state (latch/lockup safety)
+        code.append(f"{self.indent(3)}default: begin")
+        code.append(f"{self.indent(4)}state_next = {reset_node.name};")
+        code.append(f"{self.indent(3)}end")
         code.append(f"{self.indent(2)}endcase")
         code.append(f"{self.indent(1)}end")
         code.append("endmodule")
